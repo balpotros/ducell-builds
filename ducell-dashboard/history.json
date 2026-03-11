@@ -1,0 +1,16 @@
+{
+  "8420721200": [
+    {
+      "role": "user",
+      "content": "hi"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey! I'm Ducell, your web app builder. Ready to build something — what do you have in mind?"
+    },
+    {
+      "role": "user",
+      "content": "You have a critical problem - you have no short term conversation memory. Every message I send you is treated as brand new with no context of what we just discussed. Fix this in bot.js: save the last 10 messages (both mine and your replies) to a file called /root/ducell/conversation.json. Include the last 5 messages as context in every prompt you send to Claude. This will allow us to have proper back and forth conversations. Implement this now and restart yourself."
+    }
+  ]
+}

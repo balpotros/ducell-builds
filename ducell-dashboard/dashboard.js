@@ -28,6 +28,7 @@ function formatUptime(startedAt) {
 function buildHTML(status) {
   const uptime = formatUptime(status.started_at);
   const tasks = (status.completed_tasks || []).slice(-10).reverse();
+  const taskLog = (status.task_log || []).slice(-5).reverse();
 
   const taskRows = tasks.length === 0
     ? `<tr><td colspan="4" class="px-6 py-8 text-center text-gray-500">No completed tasks yet</td></tr>`
@@ -102,6 +103,22 @@ function buildHTML(status) {
     <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
       <p class="text-xs text-gray-400 uppercase tracking-widest mb-2">Currently Working On</p>
       <p class="text-lg font-medium ${status.current_task === 'Idle' ? 'text-gray-400 italic' : 'text-yellow-300'}">${escapeHtml(status.current_task)}</p>
+    </div>
+
+    <!-- Task log -->
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-700">
+        <p class="text-sm font-semibold text-gray-200">Live Task Log <span class="text-xs font-normal text-gray-500 ml-1">(last 5 steps)</span></p>
+      </div>
+      <ul class="divide-y divide-gray-700">
+        ${taskLog.length === 0
+          ? `<li class="px-6 py-5 text-sm text-gray-500 italic">No steps logged yet</li>`
+          : taskLog.map((entry, i) => `
+          <li class="px-6 py-3 flex items-start gap-4 ${i === 0 ? 'bg-gray-750' : ''}">
+            <span class="text-xs text-gray-500 whitespace-nowrap font-mono mt-0.5 w-44 shrink-0">${new Date(entry.timestamp).toLocaleString()}</span>
+            <span class="text-sm text-gray-200">${escapeHtml(entry.message)}</span>
+          </li>`).join('')}
+      </ul>
     </div>
 
     <!-- Completed tasks -->
