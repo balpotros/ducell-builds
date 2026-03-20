@@ -1,0 +1,13 @@
+{
+  "task": "Fix QuickAdd vendor/source field name mismatch",
+  "completed_steps": [
+    "Fixed QuickAdd: was sending 'description' but backend requires 'vendor' (expenses) and 'source' (income)",
+    "Updated field label to show 'Vendor' or 'Source' based on type",
+    "Deployed fix to https://finance-tracker-bissam.vercel.app"
+  ],
+  "remaining_steps": [],
+  "urls": {
+    "frontend": "https://finance-tracker-bissam.vercel.app",
+    "backend_health": "https://finance.165.227.42.130.nip.io/health"
+  }
+}

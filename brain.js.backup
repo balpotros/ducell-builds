@@ -1,0 +1,243 @@
+const fs = require('fs');
+const net = require('net');
+
+const BOT_USERNAME = 'Ducell_bot';
+const MEMORY_FILE = '/root/ducell/memory.md';
+const STATUS_FILE = '/root/ducell/status.json';
+const HISTORY_FILE = '/root/ducell/conversation.json';
+const TASK_FILE = '/root/ducell/current_task.json';
+const SOCKET_PATH = '/tmp/claude-bridge.sock';
+const MAX_HISTORY = 30;
+
+function loadTaskState() {
+  try {
+    if (fs.existsSync(TASK_FILE)) {
+      const data = JSON.parse(fs.readFileSync(TASK_FILE, 'utf8'));
+      if (data && !data.cleared) return data;
+    }
+  } catch(e) {}
+  return null;
+}
+
+const IDENTITY = `You are Ducell, an AI agent built by Bissam Al-Potros. You live on a DigitalOcean server at 165.227.42.130. Your job is to build and deploy full-stack web applications for Bissam via Telegram.
+
+You have access to these tools: Bash, Write, Edit, Read, WebFetch, WebSearch, TodoWrite, Glob, Grep.
+
+Your credentials: GITHUB_TOKEN, VERCEL_TOKEN, RENDER_API_KEY all available as environment variables.
+
+Auth0 credentials:
+AUTH0_DOMAIN=dev-yoag06mta5zqt28n.us.auth0.com
+AUTH0_CLIENT_ID=bTX0bT7sTKi2heGFao4yvTNz0nbWp0Ju
+AUTH0_CLIENT_SECRET=B9sTSvNfw4_afi5gQOwzocL-ZzzeE2d7vS6_qkuy_SCGLS73eZjmiJeWCY1ANjb5
+
+Key files:
+- /root/ducell/memory.md
+- /root/ducell/TOOLS.md
+- /root/ducell/brain.js
+- /root/ducell/current_task.json
+- NEVER edit bot.js
+
+RULES:
+1. Never say "Task completed" - end with real facts: URLs, what was done
+2. Save task progress after every step to current_task.json
+3. Never redo completed steps
+4. Ask 2 clarifying questions before every build
+5. Never ask Bissam to SSH or run commands
+6. Retry failures up to 3 times
+7. Suggest next steps after every build
+
+Tech stack: Tailwind CSS, Node.js/Express, PostgreSQL (Docker), Vercel, PM2, Auth0.`;
+
+const BUILD_KEYWORDS = ['build','create','make','fix','deploy','add','change','update','edit','delete','implement','generate','develop','write','install','setup','configure','run','execute','chmod','bash','script','command','restart','start','stop','modify','refactor','debug','rebrand','rename'];
+
+function setStatus(status, task) {
+  try { fs.writeFileSync(STATUS_FILE, JSON.stringify({ status, task, updated: new Date().toISOString() })); } catch(e) {}
+}
+
+function getHistory(chatId) {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const all = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+      return all[String(chatId)] || [];
+    }
+  } catch(e) {}
+  return [];
+}
+
+function addToHistory(chatId, role, content) {
+  try {
+    let all = {};
+    if (fs.existsSync(HISTORY_FILE)) all = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    const key = String(chatId);
+    if (!all[key]) all[key] = [];
+    all[key].push({ role, content, time: new Date().toISOString() });
+    if (all[key].length > MAX_HISTORY) all[key] = all[key].slice(-MAX_HISTORY);
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(all, null, 2));
+  } catch(e) {}
+}
+
+function isBuildRequest(text) {
+  const lower = text.toLowerCase();
+  return BUILD_KEYWORDS.some(k => lower.includes(k));
+}
+
+function ensureBridge() {
+  try {
+    fs.statSync(SOCKET_PATH);
+    return;
+  } catch(e) {}
+  const { execSync } = require('child_process');
+  execSync('su -c "node /root/ducell/claude-bridge.js >> /tmp/claude-bridge.log 2>&1 &" claudeuser');
+  const start = Date.now();
+  while (Date.now() - start < 15000) {
+    try { fs.statSync(SOCKET_PATH); return; } catch(e) {}
+    require('child_process').spawnSync('sleep', ['0.5']);
+  }
+}
+
+function askBridge(prompt) {
+  return new Promise((resolve) => {
+    ensureBridge();
+    const client = net.connect(SOCKET_PATH, () => {
+      client.write(prompt + '\n__END__\n');
+    });
+    let response = '';
+    client.on('data', (d) => {
+      response += d.toString();
+      if (response.includes('\n__DONE__\n')) {
+        client.destroy();
+        resolve(response.replace('\n__DONE__\n', '').trim());
+      }
+    });
+    client.on('error', (err) => resolve('Bridge error: ' + err.message));
+    setTimeout(() => { client.destroy(); resolve(response.trim() || 'Timeout.'); }, 180000);
+  });
+}
+
+async function handleMessage(bot, msg) {
+  const chatId = msg.chat.id;
+  let userMessage = msg.text;
+  if (!userMessage) return;
+
+  const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+  if (isGroup) {
+    const mentioned = userMessage.toLowerCase().includes('@' + BOT_USERNAME.toLowerCase());
+    if (!mentioned) return;
+    userMessage = userMessage.replace(new RegExp('@' + BOT_USERNAME, 'gi'), '').trim();
+    if (!userMessage) userMessage = 'Hello';
+  }
+
+  const firstName = (msg.from && msg.from.first_name) ? msg.from.first_name : 'Bissam';
+  console.log(`[${firstName}]: ${userMessage}`);
+  setStatus('working', userMessage.substring(0, 200));
+  addToHistory(String(chatId), 'user', userMessage);
+
+  const memory = fs.existsSync(MEMORY_FILE) ? fs.readFileSync(MEMORY_FILE, 'utf8') : 'No memory yet.';
+  const history = getHistory(String(chatId));
+  const recentHistory = history.slice(-15).map(h =>
+    `${h.role === 'user' ? firstName : 'Ducell'}: ${h.content}`
+  ).join('\n');
+
+  try {
+    let reply;
+
+    if (isBuildRequest(userMessage)) {
+      // Step 1: Get plan
+      await bot.sendMessage(chatId, '🔍 Analyzing task...');
+      
+      const planPrompt = `${IDENTITY}
+
+MEMORY:
+${memory}
+
+RECENT CONVERSATION:
+${recentHistory}
+
+${firstName} says: ${userMessage}
+
+IMPORTANT: Do NOT execute anything. Analyze and return ONLY a JSON array of specific, focused steps.
+Each step must be completable in under 2 minutes — specific file edits, single commands, or single deployments.
+No preamble. Just the JSON array like: ["step 1", "step 2", "step 3"]`;
+
+      const planRaw = await askBridge(planPrompt);
+      
+      let steps = [];
+      try {
+        const match = planRaw.match(/\[[\s\S]*?\]/);
+        if (match) steps = JSON.parse(match[0]);
+      } catch(e) {}
+
+      if (steps.length === 0) {
+        // Fallback: execute directly
+        const directPrompt = `${IDENTITY}
+
+MEMORY:
+${memory}
+
+RECENT CONVERSATION:
+${recentHistory}
+
+${firstName} says: ${userMessage}
+
+Execute this task. Report real facts when done — URLs, what changed.`;
+        reply = await askBridge(directPrompt);
+      } else {
+        await bot.sendMessage(chatId, `📋 Plan (${steps.length} steps):\n${steps.map((s,i) => `${i+1}. ${s}`).join('\n')}`);
+        
+        let completedResults = [];
+        for (let i = 0; i < steps.length; i++) {
+          await bot.sendMessage(chatId, `⚙️ Step ${i+1}/${steps.length}: ${steps[i]}`);
+          
+          const stepPrompt = `${IDENTITY}
+
+TASK CONTEXT: "${userMessage}"
+COMPLETED STEPS: ${completedResults.length > 0 ? completedResults.map((r,j) => `${j+1}: ${r.substring(0,150)}`).join(' | ') : 'None'}
+
+EXECUTE THIS STEP ONLY: ${steps[i]}
+
+Do exactly this one step. Be concise. State what you did.`;
+
+          const result = await askBridge(stepPrompt);
+          completedResults.push(result);
+          await bot.sendMessage(chatId, `✅ ${i+1}/${steps.length}: ${result.substring(0, 250)}`);
+        }
+
+        reply = `All done!\n\n${completedResults[completedResults.length - 1]}`;
+      }
+    } else {
+      // Casual
+      const casualPrompt = `${IDENTITY}
+
+MEMORY:
+${memory}
+
+RECENT CONVERSATION:
+${recentHistory}
+
+${firstName} says: ${userMessage}
+
+Answer concisely.`;
+      reply = await askBridge(casualPrompt);
+    }
+
+    addToHistory(String(chatId), 'assistant', reply.substring(0, 1000));
+    setStatus('idle', '');
+
+    if (reply.length > 4000) {
+      const chunks = reply.match(/.{1,4000}/gs) || [reply];
+      for (const chunk of chunks) {
+        await bot.sendMessage(chatId, chunk);
+        await new Promise(r => setTimeout(r, 300));
+      }
+    } else {
+      await bot.sendMessage(chatId, reply);
+    }
+
+  } catch(err) {
+    console.error('Error:', err);
+    setStatus('idle', '');
+    await bot.sendMessage(chatId, `Sorry ${firstName}, something went wrong: ${err.message.substring(0, 200)}`);
+  }
+}
+
+module.exports = { handleMessage };
